@@ -44,18 +44,6 @@ func TestFormatAAGUID(t *testing.T) {
 }
 
 func TestGetAuthenticatorName(t *testing.T) {
-	// Reset the aaguidMap for testing
-	originalMap := AAGUIDMap
-	defer func() {
-		AAGUIDMap = originalMap
-	}()
-
-	// Inject a test AAGUID map
-	AAGUIDMap = map[string]string{
-		"adce0002-35bc-c60a-648b-0b25f1f05503": "Test Authenticator",
-		"00000000-0000-0000-0000-000000000000": "Zero Authenticator",
-	}
-
 	tests := []struct {
 		name   string
 		aaguid []byte
@@ -68,11 +56,6 @@ func TestGetAuthenticatorName(t *testing.T) {
 		},
 		{
 			name:   "known AAGUID",
-			aaguid: mustDecodeHex("adce000235bcc60a648b0b25f1f05503"),
-			want:   "Test Authenticator Passkey",
-		},
-		{
-			name:   "zero UUID",
 			aaguid: mustDecodeHex("00000000000000000000000000000000"),
 			want:   "Zero Authenticator Passkey",
 		},

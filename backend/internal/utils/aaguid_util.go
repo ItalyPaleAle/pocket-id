@@ -33,9 +33,10 @@ func GetAuthenticatorName(aaguid []byte) string {
 		return ""
 	}
 
-	// Check the generated static map
-	if name, ok := AAGUIDMap[aaguidStr]; ok {
-		return name + " Passkey"
+	// Use the generated function to get the description
+	description := GetAAGUIDDescription(aaguidStr)
+	if description != "" {
+		return description + " Passkey"
 	}
 
 	return ""
