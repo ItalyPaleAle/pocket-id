@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -24,15 +23,29 @@ import (
 )
 
 type UserService struct {
-	db               *gorm.DB
-	jwtService       *JwtService
-	auditLogService  *AuditLogService
-	emailService     *EmailService
-	appConfigService *AppConfigService
+	db                    *gorm.DB
+	jwtService            *JwtService
+	auditLogService       *AuditLogService
+	emailService          *EmailService
+	appConfigService      *AppConfigService
+	profilePictureService *ProfilePictureService
 }
 
-func NewUserService(db *gorm.DB, jwtService *JwtService, auditLogService *AuditLogService, emailService *EmailService, appConfigService *AppConfigService) *UserService {
-	return &UserService{db: db, jwtService: jwtService, auditLogService: auditLogService, emailService: emailService, appConfigService: appConfigService}
+func NewUserService(
+	db *gorm.DB,
+	jwtService *JwtService,
+	auditLogService *AuditLogService,
+	emailService *EmailService,
+	appConfigService *AppConfigService,
+	profilePictureService *ProfilePictureService,
+) *UserService {
+	return &UserService{db: db,
+		jwtService:            jwtService,
+		auditLogService:       auditLogService,
+		emailService:          emailService,
+		appConfigService:      appConfigService,
+		profilePictureService: profilePictureService,
+	}
 }
 
 func (s *UserService) ListUsers(searchTerm string, sortedPaginationRequest utils.SortedPaginationRequest) ([]model.User, utils.PaginationResponse, error) {
@@ -54,7 +67,7 @@ func (s *UserService) GetUser(userID string) (model.User, error) {
 	return user, err
 }
 
-func (s *UserService) GetProfilePicture(userID string) (io.Reader, int64, error) {
+func (s *UserService) GetProfilePicture(userID string) (io.ReadCloser, int64, error) {
 	// Validate the user ID to prevent directory traversal
 	if err := uuid.Validate(userID); err != nil {
 		return nil, 0, &common.InvalidUUIDError{}
@@ -79,10 +92,8 @@ func (s *UserService) GetProfilePicture(userID string) (io.Reader, int64, error)
 		return nil, 0, err
 	}
 
-	initials := profilepicture.GetUserInitials(user.FirstName, user.LastName)
-
 	// Check if we have a cached default picture for these initials
-	defaultPicturePath := common.EnvConfig.UploadPath + "/profile-pictures/defaults/" + initials + ".png"
+	defaultPicturePath := common.EnvConfig.UploadPath + "/profile-pictures/defaults/" + user.Initials() + ".png"
 	file, err = os.Open(defaultPicturePath)
 	if err == nil {
 		// Get the file size
@@ -94,21 +105,7 @@ func (s *UserService) GetProfilePicture(userID string) (io.Reader, int64, error)
 		return file, fileInfo.Size(), nil
 	}
 
-	// If no cached default picture exists, create one and save it for future use
-	defaultPicture, err := profilepicture.CreateDefaultProfilePicture(user.FirstName, user.LastName)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Save the default picture for future use (in a goroutine to avoid blocking)
-	defaultPictureCopy := bytes.NewBuffer(defaultPicture.Bytes())
-	go func() {
-		if err := utils.SaveFileStream(defaultPictureCopy, defaultPicturePath); err != nil {
-			log.Printf("Failed to save default profile picture for initials %s: %v", initials, err)
-		}
-	}()
-
-	return defaultPicture, int64(defaultPicture.Len()), nil
+	return nil, 0, nil
 }
 
 func (s *UserService) GetUserGroups(userID string) ([]model.UserGroup, error) {
@@ -181,6 +178,11 @@ func (s *UserService) CreateUser(input dto.UserCreateDto) (model.User, error) {
 		user.LdapID = &input.LdapID
 	}
 
+	err := s.profilePictureService.EnsureDefaultProfilePicture(&user)
+	if err != nil {
+		return model.User{}, err
+	}
+
 	if err := s.db.Create(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return model.User{}, s.checkDuplicatedFields(user)
@@ -208,6 +210,11 @@ func (s *UserService) UpdateUser(userID string, updatedUser dto.UserCreateDto, u
 	user.Locale = updatedUser.Locale
 	if !updateOwnUser {
 		user.IsAdmin = updatedUser.IsAdmin
+	}
+
+	err := s.profilePictureService.EnsureDefaultProfilePicture(&user)
+	if err != nil {
+		return model.User{}, err
 	}
 
 	if err := s.db.Save(&user).Error; err != nil {

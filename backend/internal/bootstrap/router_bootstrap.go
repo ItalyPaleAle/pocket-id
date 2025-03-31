@@ -19,7 +19,7 @@ import (
 // This is used to register additional controllers for tests
 var registerTestControllers []func(apiGroup *gin.RouterGroup, db *gorm.DB, appConfigService *service.AppConfigService, jwtService *service.JwtService)
 
-func initRouter(db *gorm.DB, appConfigService *service.AppConfigService) {
+func initRouter(db *gorm.DB, appConfigService *service.AppConfigService, profilePictureService *service.ProfilePictureService) {
 	// Set the appropriate Gin mode based on the environment
 	switch common.EnvConfig.AppEnv {
 	case "production":
@@ -43,7 +43,7 @@ func initRouter(db *gorm.DB, appConfigService *service.AppConfigService) {
 	auditLogService := service.NewAuditLogService(db, appConfigService, emailService, geoLiteService)
 	jwtService := service.NewJwtService(appConfigService)
 	webauthnService := service.NewWebAuthnService(db, jwtService, auditLogService, appConfigService)
-	userService := service.NewUserService(db, jwtService, auditLogService, emailService, appConfigService)
+	userService := service.NewUserService(db, jwtService, auditLogService, emailService, appConfigService, profilePictureService)
 	customClaimService := service.NewCustomClaimService(db)
 	oidcService := service.NewOidcService(db, jwtService, appConfigService, auditLogService, customClaimService)
 	userGroupService := service.NewUserGroupService(db, appConfigService)
