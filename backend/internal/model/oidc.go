@@ -45,10 +45,15 @@ type OidcClient struct {
 	HasLogo            bool `gorm:"-"`
 	IsPublic           bool
 	PkceEnabled        bool
+	CreatedByID        string
+	CreatedBy          User
+
+	ClientAuthFederationEnabled  bool
+	ClientAuthFederationIssuer   string
+	ClientAuthFederationSubject  string
+	ClientAuthFederationAudience string
 
 	AllowedUserGroups []UserGroup `gorm:"many2many:oidc_clients_allowed_user_groups;"`
-	CreatedByID       string
-	CreatedBy         User
 }
 
 type OidcRefreshToken struct {

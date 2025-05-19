@@ -121,11 +121,13 @@ func (oc *OidcController) authorizationConfirmationRequiredHandler(c *gin.Contex
 // @Tags OIDC
 // @Produce json
 // @Param client_id formData string false "Client ID (if not using Basic Auth)"
-// @Param client_secret formData string false "Client secret (if not using Basic Auth)"
+// @Param client_secret formData string false "Client secret (if not using Basic Auth or client assertions)"
 // @Param code formData string false "Authorization code (required for 'authorization_code' grant)"
 // @Param grant_type formData string true "Grant type ('authorization_code' or 'refresh_token')"
 // @Param code_verifier formData string false "PKCE code verifier (for authorization_code with PKCE)"
 // @Param refresh_token formData string false "Refresh token (required for 'refresh_token' grant)"
+// @Param client_assertion formData string false "Client assertion type (for 'authorization_code' grant when using client assertions)"
+// @Param client_assertion_type formData string false "Client assertion type (for 'authorization_code' grant when using client assertions)"
 // @Success 200 {object} dto.OidcTokenResponseDto "Token response with access_token and optional id_token and refresh_token"
 // @Router /api/oidc/token [post]
 func (oc *OidcController) createTokensHandler(c *gin.Context) {

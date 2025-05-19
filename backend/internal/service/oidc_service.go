@@ -8,30 +8,33 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"mime/multipart"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
-	"gorm.io/gorm/clause"
-
 	"github.com/lestrrat-go/jwx/v3/jwt"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 const (
 	GrantTypeAuthorizationCode = "authorization_code"
 	GrantTypeRefreshToken      = "refresh_token"
 	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+
+	ClientAssertionTypeJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 )
 
 type OidcService struct {
@@ -40,6 +43,7 @@ type OidcService struct {
 	appConfigService   *AppConfigService
 	auditLogService    *AuditLogService
 	customClaimService *CustomClaimService
+	jwksCaches         *sync.Map
 }
 
 func NewOidcService(db *gorm.DB, jwtService *JwtService, appConfigService *AppConfigService, auditLogService *AuditLogService, customClaimService *CustomClaimService) *OidcService {
@@ -49,6 +53,7 @@ func NewOidcService(db *gorm.DB, jwtService *JwtService, appConfigService *AppCo
 		appConfigService:   appConfigService,
 		auditLogService:    auditLogService,
 		customClaimService: customClaimService,
+		jwksCaches:         &sync.Map{},
 	}
 }
 
@@ -199,7 +204,7 @@ func (s *OidcService) createTokenFromDeviceCode(ctx context.Context, input dto.O
 		tx.Rollback()
 	}()
 
-	_, err := s.verifyClientCredentialsInternal(ctx, input.ClientID, input.ClientSecret, tx)
+	_, err := s.verifyClientCredentialsInternal(ctx, input, tx)
 	if err != nil {
 		return CreatedTokens{}, err
 	}
@@ -280,7 +285,7 @@ func (s *OidcService) createTokenFromAuthorizationCode(ctx context.Context, inpu
 		tx.Rollback()
 	}()
 
-	client, err := s.verifyClientCredentialsInternal(ctx, input.ClientID, input.ClientSecret, tx)
+	client, err := s.verifyClientCredentialsInternal(ctx, input, tx)
 	if err != nil {
 		return CreatedTokens{}, err
 	}
@@ -358,7 +363,7 @@ func (s *OidcService) createTokenFromRefreshToken(ctx context.Context, input dto
 		tx.Rollback()
 	}()
 
-	_, err := s.verifyClientCredentialsInternal(ctx, input.ClientID, input.ClientSecret, tx)
+	_, err := s.verifyClientCredentialsInternal(ctx, input, tx)
 	if err != nil {
 		return CreatedTokens{}, err
 	}
@@ -421,7 +426,10 @@ func (s *OidcService) IntrospectToken(ctx context.Context, clientID, clientSecre
 		return introspectDto, &common.OidcMissingClientCredentialsError{}
 	}
 
-	_, err = s.verifyClientCredentialsInternal(ctx, clientID, clientSecret, s.db)
+	_, err = s.verifyClientCredentialsInternal(ctx, dto.OidcCreateTokensDto{
+		ClientID:     clientSecret,
+		ClientSecret: clientSecret,
+	}, s.db)
 	if err != nil {
 		return introspectDto, err
 	}
@@ -1019,7 +1027,10 @@ func (s *OidcService) getCallbackURL(urls []string, inputCallbackURL string) (ca
 }
 
 func (s *OidcService) CreateDeviceAuthorization(ctx context.Context, input dto.OidcDeviceAuthorizationRequestDto) (*dto.OidcDeviceAuthorizationResponseDto, error) {
-	client, err := s.verifyClientCredentialsInternal(ctx, input.ClientID, input.ClientSecret, s.db)
+	client, err := s.verifyClientCredentialsInternal(ctx, dto.OidcCreateTokensDto{
+		ClientID:     input.ClientID,
+		ClientSecret: input.ClientSecret,
+	}, s.db)
 	if err != nil {
 		return nil, err
 	}
@@ -1214,24 +1225,58 @@ func (s *OidcService) createAuthorizedClientInternal(ctx context.Context, userID
 	return err
 }
 
-func (s *OidcService) verifyClientCredentialsInternal(ctx context.Context, clientID, clientSecret string, tx *gorm.DB) (model.OidcClient, error) {
-	if clientID == "" {
+func (s *OidcService) verifyClientCredentialsInternal(ctx context.Context, input dto.OidcCreateTokensDto, tx *gorm.DB) (model.OidcClient, error) {
+	// First, ensure we have a valid client ID
+	if input.ClientID == "" {
 		return model.OidcClient{}, &common.OidcMissingClientCredentialsError{}
 	}
+
+	// Load the OIDC client's configuration
 	var client model.OidcClient
 	err := tx.
 		WithContext(ctx).
-		First(&client, "id = ?", clientID).
+		First(&client, "id = ?", input.ClientID).
 		Error
 	if err != nil {
 		return model.OidcClient{}, err
 	}
 
-	if !client.IsPublic {
-		if err := bcrypt.CompareHashAndPassword([]byte(client.Secret), []byte(clientSecret)); err != nil {
+	// We have 3 cases here
+	// First, if we have a client secret, we validate it
+	if input.ClientSecret != "" {
+		err = bcrypt.CompareHashAndPassword([]byte(client.Secret), []byte(input.ClientSecret))
+		if err != nil {
 			return model.OidcClient{}, &common.OidcClientSecretInvalidError{}
 		}
+		return client, nil
 	}
 
-	return client, nil
+	// Next, check if we want to use client assertions from federated identity providers
+	// This is only possible if the client allows it
+	if client.ClientAuthFederationEnabled && input.ClientAssertionType == ClientAssertionTypeJWTBearer && input.ClientAssertion != "" {
+		// Try to load before allocating a new object
+		var jwksCache *utils.JWKSCache
+		jwksCacheAny, ok := s.jwksCaches.Load(client.ClientAuthFederationIssuer)
+		if ok {
+			jwksCache, _ = jwksCacheAny.(*utils.JWKSCache)
+		} else {
+			jwksCacheAny, _ = s.jwksCaches.LoadOrStore(client.ClientAuthFederationIssuer, utils.NewJWKSCache(client.ClientAuthFederationIssuer, slog.Default()))
+			jwksCache, _ = jwksCacheAny.(*utils.JWKSCache)
+
+			// We call Start on the object
+			// Because we called LoadOrStore, there's a chance that another goroutine may have created the object at the same time, so it would have been started already. In that case, we may get JWKSCacheStartedErr and we can ignore that
+			err = jwksCache.Start(context.TODO())
+			if err != nil && !errors.Is(err, utils.JWKSCacheStartedErr) {
+				return client, fmt.Errorf("failed to get JWKS cache for issuer '%s': %w", client.ClientAuthFederationIssuer, err)
+			}
+		}
+
+	}
+
+	// If we're here, the request contained neither a client secret nor client assertions, so we return an error unless the client is public
+	if client.IsPublic {
+		return client, nil
+	}
+
+	return model.OidcClient{}, &common.OidcClientSecretInvalidError{}
 }
