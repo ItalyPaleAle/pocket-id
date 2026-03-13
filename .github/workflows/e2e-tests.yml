@@ -235,3 +235,133 @@ jobs:
           path: /tmp/backend.log
           include-hidden-files: true
           retention-days: 15
+
+  sqlite-network-filesystem-warning:
+    if: github.event.pull_request.head.ref != 'i18n_crowdin'
+    permissions:
+      contents: read
+      actions: write
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Podman and NFS packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman nfs-kernel-server nfs-common rpcbind
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load image into Podman
+        run: podman load -i /tmp/docker-image.tar
+
+      - name: Run Pocket ID with SQLite on an NFS mount
+        run: |
+          set -euo pipefail
+
+          EXPORT_DIR=/tmp/pocket-id-nfs-export
+          MOUNT_DIR=/tmp/pocket-id-nfs-mount
+          LOG_FILE=/tmp/pocket-id-nfs.log
+          LOG_PID=""
+          LOG_READY_TIMEOUT=30
+          WARNING_TEXT="⚠️⚠️⚠️ SQLite databases should not be stored on a networked file system like NFS, SMB, or FUSE"
+          WARNING_TIMEOUT=120
+          container_running() {
+            [ "$(podman inspect -f '{{.State.Running}}' pocket-id-nfs-test 2>/dev/null || echo false)" = "true" ]
+          }
+
+          cleanup() {
+            case "$LOG_PID" in
+              ''|*[!0-9]*) ;;
+              *) if [ "$LOG_PID" -gt 0 ]; then
+                   kill "$LOG_PID" 2>/dev/null || true
+                 fi ;;
+            esac
+            podman rm -f pocket-id-nfs-test >/dev/null 2>&1 || true
+            sudo systemctl stop nfs-kernel-server >/dev/null 2>&1 || sudo service nfs-kernel-server stop >/dev/null 2>&1 || true
+            sudo systemctl stop rpcbind >/dev/null 2>&1 || sudo service rpcbind stop >/dev/null 2>&1 || true
+            if mountpoint -q "$MOUNT_DIR"; then
+              sudo umount -l "$MOUNT_DIR" || true
+            fi
+            sudo rm -f /etc/exports.d/pocket-id.exports
+          }
+          trap cleanup EXIT
+
+          rm -f "$LOG_FILE"
+          mkdir -p "$EXPORT_DIR" "$MOUNT_DIR"
+          chmod 0777 "$EXPORT_DIR"
+
+          printf '%s\n' "$EXPORT_DIR 127.0.0.1(rw,sync,no_subtree_check,insecure,no_root_squash)" | sudo tee /etc/exports.d/pocket-id.exports
+          sudo exportfs -rav
+          sudo systemctl restart rpcbind || sudo service rpcbind restart
+          sudo systemctl restart nfs-kernel-server || sudo service nfs-kernel-server restart
+
+          sudo mount -t nfs -o vers=3,nolock,tcp 127.0.0.1:"$EXPORT_DIR" "$MOUNT_DIR"
+          sudo chown "$(id -u):$(id -g)" "$MOUNT_DIR"
+
+          podman run -d \
+            --name pocket-id-nfs-test \
+            -p 1411:1411 \
+            -e APP_ENV=test \
+            -e ENCRYPTION_KEY=test-encryption-key \
+            -e DB_CONNECTION_STRING=/app/data/pocket-id.db \
+            -e PUID="$(id -u)" \
+            -e PGID="$(id -g)" \
+            -v "$MOUNT_DIR:/app/data" \
+            pocket-id:test
+
+          podman logs -f pocket-id-nfs-test 2>&1 | tee "$LOG_FILE" &
+          LOG_PID=$!
+
+          for _ in $(seq 1 "$LOG_READY_TIMEOUT"); do
+            if [ -f "$LOG_FILE" ]; then
+              break
+            fi
+            if ! container_running; then
+              echo "::error::Pocket ID container exited before log capture was ready"
+              podman logs pocket-id-nfs-test || true
+              exit 1
+            fi
+            if ! kill -0 "$LOG_PID" 2>/dev/null; then
+              echo "::error::Failed to capture Pocket ID container logs"
+              break
+            fi
+            sleep 1
+          done
+
+          DEADLINE=$((SECONDS + WARNING_TIMEOUT))
+          while true; do
+            if [ -f "$LOG_FILE" ] && grep -Fq "$WARNING_TEXT" "$LOG_FILE"; then
+              break
+            fi
+            if ! container_running; then
+              echo "::error::Pocket ID container exited before emitting the expected warning"
+              podman logs pocket-id-nfs-test || true
+              exit 1
+            fi
+            if ! kill -0 "$LOG_PID" 2>/dev/null; then
+              echo "::error::Container log streaming stopped before the expected warning was emitted"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Expected SQLite network filesystem warning was not found in container logs"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Upload NFS warning logs
+        uses: actions/upload-artifact@v4
+        if: always() && github.event.pull_request.head.ref != 'i18n_crowdin'
+        with:
+          name: backend-sqlite-nfs-warning
+          path: /tmp/pocket-id-nfs.log
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 15
