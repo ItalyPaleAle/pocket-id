@@ -13,8 +13,43 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 )
+
+const ext4SuperMagic = 0xef53
+
+func TestConnectDatabase_DoesNotMarkLocalFilesystem(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "pocket-id.db")
+
+	restoreEnv := setTestEnvConfig(t, common.EnvConfigSchema{
+		DbProvider:         common.DbProviderSqlite,
+		DbConnectionString: dbPath,
+		LogLevel:           "warn",
+	})
+	defer restoreEnv()
+
+	restoreLogger, logs := captureSlogOutput(t, slog.LevelWarn)
+	defer restoreLogger()
+
+	originalStatfs := sqliteStatfs
+	sqliteStatfs = func(_ string, statfs *syscall.Statfs_t) error {
+		statfs.Type = ext4SuperMagic
+		return nil
+	}
+	t.Cleanup(func() {
+		sqliteStatfs = originalStatfs
+	})
+
+	db, err := ConnectDatabase()
+	require.NoError(t, err)
+
+	assert.False(t, IsSqliteDatabaseOnNetworkFilesystem(db))
+	assert.NotContains(t, logs.String(), "⚠️⚠️⚠️")
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	assert.NoError(t, sqlDB.Close())
+}
 
 func TestConnectDatabase_WarnsAndMarksNetworkFilesystem(t *testing.T) {
 	tempDir := t.TempDir()
@@ -32,7 +67,7 @@ func TestConnectDatabase_WarnsAndMarksNetworkFilesystem(t *testing.T) {
 
 	originalStatfs := sqliteStatfs
 	sqliteStatfs = func(_ string, statfs *syscall.Statfs_t) error {
-		statfs.Type = unix.NFS_SUPER_MAGIC
+		statfs.Type = nfsSuperMagic
 		return nil
 	}
 	t.Cleanup(func() {

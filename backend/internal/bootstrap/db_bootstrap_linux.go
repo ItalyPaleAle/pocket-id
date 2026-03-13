@@ -5,11 +5,16 @@ package bootstrap
 import (
 	"path/filepath"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 var sqliteStatfs = syscall.Statfs
+
+const (
+	nfsSuperMagic  = 0x6969
+	smbSuperMagic  = 0x517b
+	cifsSuperMagic = 0xff534d42
+	fuseSuperMagic = 0x65735546
+)
 
 func isSqliteDatabaseOnNetworkFilesystem(dbPath string) (bool, error) {
 	var statfs syscall.Statfs_t
@@ -18,8 +23,11 @@ func isSqliteDatabaseOnNetworkFilesystem(dbPath string) (bool, error) {
 		return false, err
 	}
 
-	switch int64(statfs.Type) {
-	case unix.NFS_SUPER_MAGIC, unix.SMB_SUPER_MAGIC, unix.CIFS_SUPER_MAGIC, unix.FUSE_SUPER_MAGIC:
+	// Statfs_t.Type is arch-dependent (for example, int32 on some systems and int64 on others).
+	// Normalize through uint32 first so signed values still preserve the Linux bit pattern for
+	// magic numbers such as CIFS (0xff534d42), then compare in a wide unsigned form.
+	switch uint64(uint32(statfs.Type)) {
+	case nfsSuperMagic, smbSuperMagic, cifsSuperMagic, fuseSuperMagic:
 		return true, nil
 	default:
 		return false, nil
