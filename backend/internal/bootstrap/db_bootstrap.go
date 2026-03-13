@@ -45,15 +45,16 @@ func NewDatabase() (db *gorm.DB, err error) {
 
 func ConnectDatabase() (db *gorm.DB, err error) {
 	var dialector gorm.Dialector
+	var sqliteNetworkFilesystem bool
 
 	// Choose the correct database provider
 	var onConnFn func(conn *sql.DB)
-	var onDBOpenFn func(*gorm.DB) *gorm.DB
 	switch common.EnvConfig.DbProvider {
 	case common.DbProviderSqlite:
 		if common.EnvConfig.DbConnectionString == "" {
 			return nil, errors.New("missing required env var 'DB_CONNECTION_STRING' for SQLite database")
 		}
+
 		sqliteutil.RegisterSqliteFunctions()
 
 		connString, dbPath, isMemoryDB, err := parseSqliteConnectionString(common.EnvConfig.DbConnectionString)
@@ -66,15 +67,11 @@ func ConnectDatabase() (db *gorm.DB, err error) {
 				return nil, err
 			}
 
-			sqliteNetworkFilesystem, err := isSqliteDatabaseOnNetworkFilesystem(dbPath)
+			sqliteNetworkFilesystem, err = utils.IsNetworkedFileSystem(filepath.Dir(dbPath))
 			if err != nil {
 				slog.Warn("Failed to detect filesystem type for the SQLite database directory", slog.String("path", filepath.Dir(dbPath)), slog.Any("error", err))
 			} else if sqliteNetworkFilesystem {
 				slog.Warn("⚠️⚠️⚠️ SQLite databases should not be stored on a networked file system like NFS, SMB, or FUSE, as there's a risk of crashes and even database corruption", slog.String("path", filepath.Dir(dbPath)))
-			}
-
-			onDBOpenFn = func(db *gorm.DB) *gorm.DB {
-				return db.Set(sqliteNetworkFilesystemKey, sqliteNetworkFilesystem)
 			}
 		}
 
@@ -108,8 +105,8 @@ func ConnectDatabase() (db *gorm.DB, err error) {
 			Logger:         getGormLogger(),
 		})
 		if err == nil {
-			if onDBOpenFn != nil {
-				db = onDBOpenFn(db)
+			if common.EnvConfig.DbProvider == common.DbProviderSqlite {
+				db = db.Set(sqliteNetworkFilesystemKey, sqliteNetworkFilesystem)
 			}
 
 			slog.Info("Connected to database", slog.String("provider", string(common.EnvConfig.DbProvider)))

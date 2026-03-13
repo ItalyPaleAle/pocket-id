@@ -1,14 +1,10 @@
 //go:build linux
 
-package bootstrap
+package utils
 
-import (
-	"path/filepath"
-	"syscall"
-)
+import "syscall"
 
-var sqliteStatfs = syscall.Statfs
-
+// Filesystem magic values from Linux's include/uapi/linux/magic.h, used by statfs(2).
 const (
 	nfsSuperMagic  = 0x6969
 	smbSuperMagic  = 0x517b
@@ -16,10 +12,11 @@ const (
 	fuseSuperMagic = 0x65735546
 )
 
-func isSqliteDatabaseOnNetworkFilesystem(dbPath string) (bool, error) {
+// IsNetworkedFileSystem reports whether path is on a filesystem that is known to be
+// unsafe for SQLite, specifically NFS, SMB/CIFS, or FUSE mounts.
+func IsNetworkedFileSystem(path string) (bool, error) {
 	var statfs syscall.Statfs_t
-	err := sqliteStatfs(filepath.Dir(dbPath), &statfs)
-	if err != nil {
+	if err := syscall.Statfs(path, &statfs); err != nil {
 		return false, err
 	}
 
