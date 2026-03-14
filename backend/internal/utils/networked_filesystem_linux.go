@@ -12,8 +12,7 @@ const (
 	fuseSuperMagic = 0x65735546
 )
 
-// IsNetworkedFileSystem reports whether path is on a filesystem that is known to be
-// unsafe for SQLite, specifically NFS, SMB/CIFS, or FUSE mounts.
+// IsNetworkedFileSystem reports whether path is on a filesystem that is known to be unsafe for SQLite, specifically NFS, SMB/CIFS, or FUSE mounts.
 func IsNetworkedFileSystem(path string) (bool, error) {
 	var statfs syscall.Statfs_t
 	if err := syscall.Statfs(path, &statfs); err != nil {
@@ -21,8 +20,7 @@ func IsNetworkedFileSystem(path string) (bool, error) {
 	}
 
 	// Statfs_t.Type is arch-dependent (for example, int32 on some systems and int64 on others).
-	// Normalize through uint32 first so signed values still preserve the Linux bit pattern for
-	// magic numbers such as CIFS (0xff534d42), then compare in a wide unsigned form.
+	// Normalize through uint32 first so signed values still preserve the Linux bit pattern for magic numbers such as CIFS (0xff534d42), then compare in a wide unsigned form.
 	switch uint64(uint32(statfs.Type)) {
 	case nfsSuperMagic, smbSuperMagic, cifsSuperMagic, fuseSuperMagic:
 		return true, nil

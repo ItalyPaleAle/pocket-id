@@ -44,8 +44,10 @@ func NewDatabase() (db *gorm.DB, err error) {
 }
 
 func ConnectDatabase() (db *gorm.DB, err error) {
-	var dialector gorm.Dialector
-	var sqliteNetworkFilesystem bool
+	var (
+		dialector gorm.Dialector
+		sqliteNetworkFilesystem bool
+	)
 
 	// Choose the correct database provider
 	var onConnFn func(conn *sql.DB)
@@ -132,6 +134,7 @@ func ConnectDatabase() (db *gorm.DB, err error) {
 	return nil, err
 }
 
+// IsSqliteDatabaseOnNetworkFilesystem returns true if the current database connection is to a SQLite database stored on a networked filesystem
 func IsSqliteDatabaseOnNetworkFilesystem(db *gorm.DB) bool {
 	if db == nil {
 		return false
