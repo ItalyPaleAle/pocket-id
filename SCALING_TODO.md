@@ -31,7 +31,10 @@ the corresponding cleanup job is deleted.
 ## Local-filesystem dependencies
 
 - [ ] **Filesystem storage backend** — local disk isn't shared; require DB/S3
-  backend for multi-instance.
+  backend for multi-instance. (main now has `utils.IsNetworkedFileSystem` to
+  detect NFS/SMB/CIFS/FUSE — reuse it to warn/guard, but note shared SQLite on
+  those is still unsafe; the answer is a shared object/DB backend, not a network
+  mount.)
 - [ ] **Default profile picture caching** — generated avatars written to local
   disk per-instance; rely on shared storage.
 - [ ] **GeoLite DB on local disk** — per-instance copy + download; use shared or
@@ -46,8 +49,12 @@ owning actor's alarm and remove the matching cleanup function.
 - [ ] **One-time access tokens** — actor with expiry alarm; drop `ClearOneTimeAccessTokens`.
 - [ ] **Signup tokens** — actor with expiry alarm; drop `ClearSignupTokens`.
 - [ ] **Email verification tokens** — actor with expiry alarm; drop `ClearEmailVerificationTokens`.
-- [ ] **OIDC authorization codes** — actor with expiry alarm; drop `ClearOidcAuthorizationCodes`.
-- [ ] **OIDC refresh tokens** — actor with expiry alarm; drop `ClearOidcRefreshTokens`.
+- [ ] **OAuth2 sessions** — unified fosite store (auth codes, access/refresh
+  tokens, PAR); actor with expiry alarm; drop `ClearOAuth2Sessions`.
+- [ ] **OAuth2 client-assertion JTIs** — replay-protection IDs; actor with expiry
+  alarm; drop `ClearOAuth2JTIs`.
+- [ ] **OIDC interaction sessions** — abandoned-session pruning; actor/alarm;
+  drop `ClearInteractionSessions`.
 - [ ] **Reauthentication tokens** — actor with expiry alarm; drop `ClearReauthenticationTokens`.
 - [ ] **Audit log retention** — actor/alarm-driven pruning; drop `ClearAuditLogs`.
 - [ ] **Unused default profile pictures** — alarm-driven pruning; drop `ClearUnusedDefaultProfilePictures`.
