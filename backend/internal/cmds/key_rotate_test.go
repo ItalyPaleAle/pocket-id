@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
 	testingutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
@@ -82,7 +82,7 @@ func testKeyRotateWithDatabaseStorage(t *testing.T, flags keyRotateFlags, wantEr
 	db := testingutils.NewDatabaseForTest(t)
 
 	// Initialize app config service and create instance
-	appConfigService, err := service.NewAppConfigService(t.Context(), db)
+	appConfigService, err := appconfig.NewService(t.Context(), db)
 	require.NoError(t, err)
 	instanceID := appConfigService.GetDbConfig().InstanceID.Value
 

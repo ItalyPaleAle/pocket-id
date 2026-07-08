@@ -1,4 +1,4 @@
-package service
+package appconfig
 
 import (
 	"context"
@@ -26,7 +26,7 @@ type AppConfigService struct {
 	db       *gorm.DB
 }
 
-func NewAppConfigService(ctx context.Context, db *gorm.DB) (service *AppConfigService, err error) {
+func NewService(ctx context.Context, db *gorm.DB) (service *AppConfigService, err error) {
 	service = &AppConfigService{
 		db: db,
 	}

@@ -1,7 +1,6 @@
-package service
+package appconfig
 
 import (
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,16 +10,6 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
-
-// NewTestAppConfigService is a function used by tests to create AppConfigService objects with pre-defined configuration values
-func NewTestAppConfigService(config *model.AppConfig) *AppConfigService {
-	service := &AppConfigService{
-		dbConfig: atomic.Pointer[model.AppConfig]{},
-	}
-	service.dbConfig.Store(config)
-
-	return service
-}
 
 func TestLoadDbConfig(t *testing.T) {
 	t.Run("empty config table", func(t *testing.T) {

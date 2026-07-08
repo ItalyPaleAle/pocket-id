@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/pocket-id/pocket-id/backend/internal/apikey"
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/job"
 	"gorm.io/gorm"
 
@@ -19,7 +20,7 @@ import (
 )
 
 type services struct {
-	appConfigService     *service.AppConfigService
+	appConfigService     *appconfig.AppConfigService
 	appImagesService     *service.AppImagesService
 	emailService         *service.EmailService
 	geoLiteService       *service.GeoLiteService
@@ -47,7 +48,7 @@ type services struct {
 func initServices(ctx context.Context, db *gorm.DB, httpClient *http.Client, imageExtensions map[string]string, fileStorage storage.FileStorage, scheduler *job.Scheduler) (svc *services, err error) {
 	svc = &services{}
 
-	svc.appConfigService, err = service.NewAppConfigService(ctx, db)
+	svc.appConfigService, err = appconfig.NewService(ctx, db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create app config service: %w", err)
 	}

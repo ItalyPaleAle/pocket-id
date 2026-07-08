@@ -13,6 +13,7 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
@@ -47,11 +48,11 @@ type JwtService struct {
 	envConfig        *common.EnvConfigSchema
 	privateKey       jwk.Key
 	keyId            string
-	appConfigService *AppConfigService
+	appConfigService *appconfig.AppConfigService
 	jwksEncoded      []byte
 }
 
-func NewJwtService(ctx context.Context, db *gorm.DB, appConfigService *AppConfigService) (*JwtService, error) {
+func NewJwtService(ctx context.Context, db *gorm.DB, appConfigService *appconfig.AppConfigService) (*JwtService, error) {
 	service := &JwtService{}
 
 	err := service.init(ctx, db, appConfigService, &common.EnvConfig)
@@ -62,7 +63,7 @@ func NewJwtService(ctx context.Context, db *gorm.DB, appConfigService *AppConfig
 	return service, nil
 }
 
-func (s *JwtService) init(ctx context.Context, db *gorm.DB, appConfigService *AppConfigService, envConfig *common.EnvConfigSchema) (err error) {
+func (s *JwtService) init(ctx context.Context, db *gorm.DB, appConfigService *appconfig.AppConfigService, envConfig *common.EnvConfigSchema) (err error) {
 	s.appConfigService = appConfigService
 	s.envConfig = envConfig
 	s.db = db

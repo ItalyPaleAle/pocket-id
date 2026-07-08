@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/bootstrap"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
 )
@@ -84,7 +84,7 @@ func keyRotate(ctx context.Context, flags keyRotateFlags, db *gorm.DB, envConfig
 	}
 
 	// Init the services we need
-	appConfigService, err := service.NewAppConfigService(ctx, db)
+	appConfigService, err := appconfig.NewService(ctx, db)
 	if err != nil {
 		return fmt.Errorf("failed to create app config service: %w", err)
 	}

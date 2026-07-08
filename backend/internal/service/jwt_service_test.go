@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
@@ -35,7 +36,7 @@ func newTestEnvConfig() *common.EnvConfigSchema {
 	}
 }
 
-func initJwtService(t *testing.T, db *gorm.DB, appConfig *AppConfigService, envConfig *common.EnvConfigSchema) *JwtService {
+func initJwtService(t *testing.T, db *gorm.DB, appConfig *appconfig.AppConfigService, envConfig *common.EnvConfigSchema) *JwtService {
 	t.Helper()
 
 	service := &JwtService{}
@@ -45,7 +46,7 @@ func initJwtService(t *testing.T, db *gorm.DB, appConfig *AppConfigService, envC
 	return service
 }
 
-func setupJwtService(t *testing.T, appConfig *AppConfigService) (*JwtService, *gorm.DB, *common.EnvConfigSchema) {
+func setupJwtService(t *testing.T, appConfig *appconfig.AppConfigService) (*JwtService, *gorm.DB, *common.EnvConfigSchema) {
 	t.Helper()
 
 	db := testutils.NewDatabaseForTest(t)
@@ -60,7 +61,7 @@ func newTestDbAndEnv(t *testing.T) (*gorm.DB, *common.EnvConfigSchema) {
 	return testutils.NewDatabaseForTest(t), newTestEnvConfig()
 }
 
-func saveKeyToDatabase(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *AppConfigService, key jwk.Key) string {
+func saveKeyToDatabase(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *appconfig.AppConfigService, key jwk.Key) string {
 	t.Helper()
 
 	keyProvider, err := jwkutils.GetKeyProvider(db, envConfig, appConfig.GetDbConfig().InstanceID.Value)
@@ -77,7 +78,7 @@ func saveKeyToDatabase(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSch
 }
 
 func TestJwtService_Init(t *testing.T) {
-	mockConfig := NewTestAppConfigService(&model.AppConfig{
+	mockConfig := appconfig.NewTestAppConfigService(&model.AppConfig{
 		SessionDuration: model.AppConfigVariable{Value: "60"}, // 60 minutes
 	})
 
@@ -178,7 +179,7 @@ func TestJwtService_Init(t *testing.T) {
 }
 
 func TestJwtService_GetPublicJWK(t *testing.T) {
-	mockConfig := NewTestAppConfigService(&model.AppConfig{
+	mockConfig := appconfig.NewTestAppConfigService(&model.AppConfig{
 		SessionDuration: model.AppConfigVariable{Value: "60"}, // 60 minutes
 	})
 
@@ -296,7 +297,7 @@ func TestJwtService_GetPublicJWK(t *testing.T) {
 }
 
 func TestGenerateVerifyAccessToken(t *testing.T) {
-	mockConfig := NewTestAppConfigService(&model.AppConfig{
+	mockConfig := appconfig.NewTestAppConfigService(&model.AppConfig{
 		SessionDuration: model.AppConfigVariable{Value: "60"}, // 60 minutes
 	})
 
@@ -385,7 +386,7 @@ func TestGenerateVerifyAccessToken(t *testing.T) {
 	})
 
 	t.Run("uses session duration from config", func(t *testing.T) {
-		customMockConfig := NewTestAppConfigService(&model.AppConfig{
+		customMockConfig := appconfig.NewTestAppConfigService(&model.AppConfig{
 			SessionDuration: model.AppConfigVariable{Value: "30"}, // 30 minutes
 		})
 		service, _, _ := setupJwtService(t, customMockConfig)
@@ -572,7 +573,7 @@ func TestTokenTypeValidator(t *testing.T) {
 	})
 }
 
-func importKey(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *AppConfigService, privateKeyRaw any) string {
+func importKey(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *appconfig.AppConfigService, privateKeyRaw any) string {
 	t.Helper()
 
 	privateKey, err := jwkutils.ImportRawKey(privateKeyRaw, "", "")
@@ -587,7 +588,7 @@ var (
 	rsaKeyPrecomputeOnce sync.Once
 )
 
-func createRSA4096KeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *AppConfigService) string {
+func createRSA4096KeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *appconfig.AppConfigService) string {
 	t.Helper()
 
 	rsaKeyPrecomputeOnce.Do(func() {
@@ -602,7 +603,7 @@ func createRSA4096KeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigS
 	return importKey(t, db, envConfig, appConfig, rsaKeyPrecomputed)
 }
 
-func createECDSAKeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *AppConfigService) string {
+func createECDSAKeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *appconfig.AppConfigService) string {
 	t.Helper()
 
 	// Generate a new P-256 ECDSA key
@@ -614,7 +615,7 @@ func createECDSAKeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSch
 }
 
 // Helper function to create an Ed25519 key and save it as JWK
-func createEdDSAKeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *AppConfigService) string {
+func createEdDSAKeyJWK(t *testing.T, db *gorm.DB, envConfig *common.EnvConfigSchema, appConfig *appconfig.AppConfigService) string {
 	t.Helper()
 
 	// Generate a new Ed25519 key pair

@@ -15,10 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/job"
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/crypto"
 )
@@ -28,7 +28,7 @@ type NewActorsOpts struct {
 	Postgres *pgxpool.Pool
 
 	EnvConfig   *common.EnvConfigSchema
-	AppConfig   *service.AppConfigService
+	AppConfig   *appconfig.AppConfigService
 	HttpClient  *http.Client
 	DB          *gorm.DB
 	FileStorage storage.FileStorage

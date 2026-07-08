@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
@@ -13,7 +14,6 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/bootstrap"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
 )
@@ -67,7 +67,7 @@ func encryptionKeyRotate(ctx context.Context, flags encryptionKeyRotateFlags, db
 		}
 	}
 
-	appConfigService, err := service.NewAppConfigService(ctx, db)
+	appConfigService, err := appconfig.NewService(ctx, db)
 	if err != nil {
 		return fmt.Errorf("failed to create app config service: %w", err)
 	}

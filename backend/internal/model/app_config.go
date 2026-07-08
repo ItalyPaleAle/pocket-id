@@ -88,7 +88,7 @@ func (c *AppConfig) ToAppConfigVariableSlice(showAll bool, redactSensitiveValues
 	cfgValue := reflect.ValueOf(c).Elem()
 	cfgType := cfgValue.Type()
 
-	var res []AppConfigVariable
+	res := make([]AppConfigVariable, 0, cfgType.NumField())
 
 	for i := range cfgType.NumField() {
 		field := cfgType.Field(i)
@@ -186,8 +186,8 @@ func (e AppConfigKeyNotFoundError) Error() string {
 
 func (e AppConfigKeyNotFoundError) Is(target error) bool {
 	// Ignore the field property when checking if an error is of the type AppConfigKeyNotFoundError
-	x := AppConfigKeyNotFoundError{}
-	return errors.As(target, &x)
+	_, ok := errors.AsType[*AppConfigKeyNotFoundError](target)
+	return ok
 }
 
 type AppConfigInternalForbiddenError struct {
@@ -200,6 +200,6 @@ func (e AppConfigInternalForbiddenError) Error() string {
 
 func (e AppConfigInternalForbiddenError) Is(target error) bool {
 	// Ignore the field property when checking if an error is of the type AppConfigInternalForbiddenError
-	x := AppConfigInternalForbiddenError{}
-	return errors.As(target, &x)
+	_, ok := errors.AsType[*AppConfigInternalForbiddenError](target)
+	return ok
 }

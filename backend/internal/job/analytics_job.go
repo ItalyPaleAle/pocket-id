@@ -12,14 +12,14 @@ import (
 	backoff "github.com/cenkalti/backoff/v5"
 	"github.com/italypaleale/francis/builtin/cronjob"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 )
 
 const heartbeatUrl = "https://analytics.pocket-id.org/heartbeat"
 
 // GetAnalyticsJob returns the CronJob actor
-func GetAnalyticsJob(appConfig *service.AppConfigService, httpClient *http.Client) (*cronjob.CronJob, error) {
+func GetAnalyticsJob(appConfig *appconfig.AppConfigService, httpClient *http.Client) (*cronjob.CronJob, error) {
 	// Skip if analytics are disabled or not in production environment
 	if common.EnvConfig.AnalyticsDisabled || !common.EnvConfig.AppEnv.IsProduction() {
 		return nil, nil
@@ -56,7 +56,7 @@ type AnalyticsJob struct {
 }
 
 // createBody pre-computes the body for all requests
-func (j *AnalyticsJob) createBody(appConfig *service.AppConfigService) error {
+func (j *AnalyticsJob) createBody(appConfig *appconfig.AppConfigService) error {
 	body, err := json.Marshal(struct {
 		Version    string `json:"version"`
 		InstanceID string `json:"instance_id"`

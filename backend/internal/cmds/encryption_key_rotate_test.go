@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
 	testingutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
@@ -25,7 +25,7 @@ func TestEncryptionKeyRotate(t *testing.T) {
 
 	db := testingutils.NewDatabaseForTest(t)
 
-	appConfigService, err := service.NewAppConfigService(t.Context(), db)
+	appConfigService, err := appconfig.NewService(t.Context(), db)
 	require.NoError(t, err)
 	instanceID := appConfigService.GetDbConfig().InstanceID.Value
 
