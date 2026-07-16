@@ -3,6 +3,7 @@ package usersignup
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 )
+
+// emailDomainRegex validates the domain part of an email address (e.g. "example.com" or "mail.example.co.uk")
+var emailDomainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 
 // authenticationMethodOneTimePassword identifies one-time-password authentication, used for the initial admin setup token
 // It must match the value emitted by the JWT service in the access token's "amr" claim
@@ -70,6 +74,16 @@ func (s *Service) SignUp(ctx context.Context, signupData signUpDto, ipAddress, u
 
 		if !signupToken.IsValid() {
 			return model.User{}, "", &common.TokenInvalidOrExpiredError{}
+		}
+
+		if signupToken.HasEmailDomainRestriction() {
+			email := ""
+			if signupData.Email != nil {
+				email = *signupData.Email
+			}
+			if !signupToken.EmailMatchesDomain(email) {
+				return model.User{}, "", &common.EmailDomainNotAllowedError{Domain: *signupToken.EmailDomain}
+			}
 		}
 
 		for _, group := range signupToken.UserGroups {
@@ -190,8 +204,32 @@ func (s *Service) DeleteSignupToken(ctx context.Context, tokenID string) error {
 	return s.db.WithContext(ctx).Delete(&SignupToken{}, "id = ?", tokenID).Error
 }
 
-func (s *Service) CreateSignupToken(ctx context.Context, ttl time.Duration, usageLimit int, userGroupIDs []string) (SignupToken, error) {
-	signupToken, err := newSignupToken(ttl, usageLimit)
+// GetSignupTokenInfo returns a signup token by its token string.
+// It's used to expose the limited, public metadata (such as the required email domain) needed to render the signup form.
+func (s *Service) GetSignupTokenInfo(ctx context.Context, token string) (SignupToken, error) {
+	var signupToken SignupToken
+	err := s.db.
+		WithContext(ctx).
+		Where("token = ?", token).
+		First(&signupToken).
+		Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return SignupToken{}, &common.TokenInvalidOrExpiredError{}
+		}
+		return SignupToken{}, err
+	}
+
+	return signupToken, nil
+}
+
+func (s *Service) CreateSignupToken(ctx context.Context, ttl time.Duration, usageLimit int, userGroupIDs []string, emailDomain *string) (SignupToken, error) {
+	normalizedDomain, err := normalizeEmailDomain(emailDomain)
+	if err != nil {
+		return SignupToken{}, err
+	}
+
+	signupToken, err := newSignupToken(ttl, usageLimit, normalizedDomain)
 	if err != nil {
 		return SignupToken{}, err
 	}
@@ -214,7 +252,27 @@ func (s *Service) CreateSignupToken(ctx context.Context, ttl time.Duration, usag
 	return *signupToken, nil
 }
 
-func newSignupToken(ttl time.Duration, usageLimit int) (*SignupToken, error) {
+// normalizeEmailDomain trims, lowercases and validates an optional email domain restriction.
+// It accepts inputs with or without a leading "@" and returns nil when no restriction was provided.
+func normalizeEmailDomain(input *string) (*string, error) {
+	if input == nil {
+		return nil, nil
+	}
+
+	domain := strings.ToLower(strings.TrimSpace(*input))
+	domain = strings.TrimPrefix(domain, "@")
+	if domain == "" {
+		return nil, nil
+	}
+
+	if !emailDomainRegex.MatchString(domain) {
+		return nil, &common.ValidationError{Message: "Invalid email domain"}
+	}
+
+	return &domain, nil
+}
+
+func newSignupToken(ttl time.Duration, usageLimit int, emailDomain *string) (*SignupToken, error) {
 	// Generate a random token
 	randomString, err := utils.GenerateRandomAlphanumericString(16)
 	if err != nil {
@@ -223,10 +281,11 @@ func newSignupToken(ttl time.Duration, usageLimit int) (*SignupToken, error) {
 
 	now := time.Now().Round(time.Second)
 	token := &SignupToken{
-		Token:      randomString,
-		ExpiresAt:  datatype.DateTime(now.Add(ttl)),
-		UsageLimit: usageLimit,
-		UsageCount: 0,
+		Token:       randomString,
+		ExpiresAt:   datatype.DateTime(now.Add(ttl)),
+		UsageLimit:  usageLimit,
+		UsageCount:  0,
+		EmailDomain: emailDomain,
 	}
 
 	return token, nil
