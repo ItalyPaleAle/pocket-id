@@ -226,7 +226,6 @@ func TestParseEnvConfig(t *testing.T) {
 		t.Setenv("HOST", "LOCALHOST")
 		t.Setenv("UNIX_SOCKET", "/tmp/app.sock")
 		t.Setenv("MAXMIND_LICENSE_KEY", "test-license")
-		t.Setenv("GEOLITE_DB_PATH", "/custom/geolite.mmdb")
 		t.Setenv("ACTORS_PORT", "9999")
 		t.Setenv("ACTORS_HOST", "LOCALHOST")
 
