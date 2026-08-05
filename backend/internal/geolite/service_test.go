@@ -1,6 +1,8 @@
 package geolite
 
 import (
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -8,8 +10,8 @@ import (
 )
 
 func TestServiceGetLocationByIPPrivateRanges(t *testing.T) {
-	// Private addresses are resolved without reaching the actor, so the service works even with no database around
-	svc := newService(nil)
+	// Private addresses are short-circuited, so the service resolves them even with no database around
+	svc, _ := newServiceForTest(t, nil)
 
 	tests := []struct {
 		name      string
@@ -37,7 +39,7 @@ func TestServiceGetLocationByIPPrivateRanges(t *testing.T) {
 }
 
 func TestServiceGetLocationByIPInvalidAddress(t *testing.T) {
-	svc := newService(nil)
+	svc, _ := newServiceForTest(t, nil)
 
 	_, _, err := svc.GetLocationByIP(t.Context(), "not-an-ip")
 	require.Error(t, err)
@@ -45,13 +47,7 @@ func TestServiceGetLocationByIPInvalidAddress(t *testing.T) {
 }
 
 func TestServiceGetLocationByIP(t *testing.T) {
-	actorSvc := newActorServiceForTest(t, actorOptions{updaterDisabled: true})
-	storeDatabaseForTest(t, actorSvc, readTestDatabase(t), time.Now())
-
-	svc := newService(actorSvc)
-
-	// The reader has just activated, so the first lookup is the one that loads the database in: the service falls back from Peek to Invoke on its own
-	require.Equal(t, lookupStatusNotLoaded, peekLookupForTest(t, actorSvc, "81.2.69.142").Status)
+	svc, _ := newServiceForTest(t, readTestDatabase(t))
 
 	tests := []struct {
 		name      string
@@ -59,8 +55,9 @@ func TestServiceGetLocationByIP(t *testing.T) {
 		country   string
 		city      string
 	}{
-		{name: "public IPv4", ipAddress: "81.2.69.142", country: "United Kingdom", city: "London"},
+		{name: "public IPv4 with country and city", ipAddress: "81.2.69.142", country: "United Kingdom", city: "London"},
 		{name: "public IPv4 in another country", ipAddress: "216.160.83.56", country: "United States", city: "Milton"},
+		{name: "public IPv4 with country only", ipAddress: "67.43.156.1", country: "Bhutan"},
 		{name: "public IPv6", ipAddress: "2001:218::1", country: "Japan"},
 		{name: "public address not in the database", ipAddress: "8.8.8.8"},
 	}
@@ -73,18 +70,114 @@ func TestServiceGetLocationByIP(t *testing.T) {
 			require.Equal(t, tt.city, city)
 		})
 	}
-
-	// The fallback only happens until the reader has the database in memory, after which Peek answers on its own
-	require.Equal(t, lookupStatusOK, peekLookupForTest(t, actorSvc, "81.2.69.142").Status)
 }
 
 func TestServiceGetLocationByIPWithoutDatabase(t *testing.T) {
-	// Deployments without a MaxMind license key never download a database: lookups return no location instead of failing
-	actorSvc := newActorServiceForTest(t, actorOptions{updaterDisabled: true})
-	svc := newService(actorSvc)
+	// Air-gapped deployments that haven't supplied a database yet get no location, rather than an error on every audit log entry
+	svc, _ := newServiceForTest(t, nil)
 
 	country, city, err := svc.GetLocationByIP(t.Context(), "81.2.69.142")
 	require.NoError(t, err)
 	require.Empty(t, country)
 	require.Empty(t, city)
+}
+
+func TestServiceLoadMissingDatabase(t *testing.T) {
+	svc, dbPath := newServiceForTest(t, readTestDatabase(t))
+
+	country, _, err := svc.GetLocationByIP(t.Context(), "81.2.69.142")
+	require.NoError(t, err)
+	require.Equal(t, "United Kingdom", country)
+
+	// A database that goes away stops being used, rather than being served from a mapping of a file that no longer exists
+	require.NoError(t, os.Remove(dbPath))
+	require.NoError(t, svc.load(t.Context()))
+
+	country, _, err = svc.GetLocationByIP(t.Context(), "81.2.69.142")
+	require.NoError(t, err)
+	require.Empty(t, country)
+}
+
+func TestServiceLoadInvalidDatabase(t *testing.T) {
+	svc, dbPath := newServiceForTest(t, readTestDatabase(t))
+
+	// A corrupted file fails to load, and the database already mapped keeps serving lookups
+	writeDatabaseFileForTest(t, dbPath, []byte("not a database"))
+
+	err := svc.load(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to open the GeoLite2 City database")
+
+	country, _, err := svc.GetLocationByIP(t.Context(), "81.2.69.142")
+	require.NoError(t, err)
+	require.Equal(t, "United Kingdom", country)
+}
+
+func TestServiceLoadUnchangedDatabase(t *testing.T) {
+	// Reloading a file that hasn't changed keeps the current mapping, so an unrelated event in the watched directory costs nothing
+	svc, _ := newServiceForTest(t, readTestDatabase(t))
+
+	svc.mu.RLock()
+	before := svc.db
+	svc.mu.RUnlock()
+
+	require.NoError(t, svc.load(t.Context()))
+
+	svc.mu.RLock()
+	after := svc.db
+	svc.mu.RUnlock()
+
+	require.Same(t, before, after)
+}
+
+func TestServiceConcurrentLookupsDuringReload(t *testing.T) {
+	// Lookups read straight out of the mapped file, so a reload must not unmap a database that a lookup is still reading
+	database := readTestDatabase(t)
+	svc, dbPath := newServiceForTest(t, database)
+
+	const (
+		lookers = 16
+		reloads = 25
+	)
+
+	stop := make(chan struct{})
+	errs := make([]error, lookers)
+
+	var wg sync.WaitGroup
+	wg.Add(lookers)
+	for i := range lookers {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
+				_, _, err := svc.GetLocationByIP(t.Context(), "81.2.69.142")
+				if err != nil {
+					errs[i] = err
+					return
+				}
+			}
+		}()
+	}
+
+	for i := range reloads {
+		writeDatabaseFileForTest(t, dbPath, database)
+
+		// Force a distinct modification time, so every load really does remap the file instead of finding it unchanged
+		modTime := time.Now().Add(-time.Duration(i) * time.Second)
+		require.NoError(t, os.Chtimes(dbPath, modTime, modTime))
+
+		require.NoError(t, svc.load(t.Context()))
+	}
+
+	close(stop)
+	wg.Wait()
+
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
 }

@@ -2,39 +2,52 @@ package geolite
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
-	"time"
+	"os"
+	"sync"
 
-	"github.com/italypaleale/francis/actor"
+	"github.com/oschwald/maxminddb-golang/v2"
 
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 )
 
-const (
-	// internalNetworkCountry is reported for addresses that aren't routable on the public Internet
-	internalNetworkCountry = "Internal Network"
+// The GeoLite2 City database is kept on disk and memory-mapped, rather than held in memory.
+// The format is random-access by design, so mapping the file means only the pages a lookup actually touches are resident, and the kernel can evict them under pressure - where reading the whole database into the heap would cost its full size, permanently.
+//
+// The file is a cache, not state: it is a copy of a public artifact that any replica can rebuild on its own, so nothing is lost when a node goes away, and every replica keeps its own without needing to replicate anything.
+// It is also the supported way to supply a database by hand, which is what air-gapped deployments do: the file is watched, so replacing it takes effect without a restart.
 
-	// lookupTimeout bounds a single lookup against the GeoLite actor
-	lookupTimeout = 10 * time.Second
-)
+// internalNetworkCountry is reported for addresses that aren't routable on the public Internet
+const internalNetworkCountry = "Internal Network"
 
-// Service resolves IP addresses to locations, through the GeoLite actor
+// Service resolves IP addresses to locations, against a memory-mapped GeoLite2 City database
 type Service struct {
-	actors *actor.Service
+	log    *slog.Logger
+	dbPath string
+
+	// mu guards the fields below
+	// A lookup holds it for reading throughout, so a reload can't unmap the database from under it
+	mu sync.RWMutex
+	// db is the database currently mapped, or nil when there is no readable database at dbPath
+	db *maxminddb.Reader
+	// dbModTime and dbSize identify the file that was mapped, so a reload of an unchanged file is skipped
+	dbModTime int64
+	dbSize    int64
 }
 
-func newService(actors *actor.Service) *Service {
+func newService(log *slog.Logger, dbPath string) *Service {
 	return &Service{
-		actors: actors,
+		log:    log,
+		dbPath: dbPath,
 	}
 }
 
 // GetLocationByIP returns the country and city of the given IP address
-// Both are empty when the address isn't in the database, or when no database has been downloaded yet
-func (s *Service) GetLocationByIP(parentCtx context.Context, ipAddress string) (country string, city string, err error) {
+// Both are empty when the address isn't in the database, or when no database is available
+func (s *Service) GetLocationByIP(_ context.Context, ipAddress string) (country string, city string, err error) {
 	if ipAddress == "" {
 		return "", "", nil
 	}
@@ -59,52 +72,105 @@ func (s *Service) GetLocationByIP(parentCtx context.Context, ipAddress string) (
 		return "", "", fmt.Errorf("failed to parse IP address: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(parentCtx, lookupTimeout)
-	defer cancel()
+	// The read lock is held for the whole lookup, including decoding, because the record is decoded straight out of the mapped file
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	request := lookupRequest{
-		IPAddress: addr.String(),
+	if s.db == nil {
+		// No database is available
+		return "", "", nil
 	}
 
-	// Lookups are peeked so they run concurrently with each other on the actor
-	response, err := s.lookup(ctx, false, request)
+	result := s.db.Lookup(addr)
+	if !result.Found() {
+		return "", "", nil
+	}
+
+	var record geoLiteRecord
+	err = result.Decode(&record)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to decode database record: %w", err)
 	}
 
-	// The reader has just activated and has no database in memory to answer from
-	// Reading it in mutates the actor, which a Peek must not do, so the lookup is repeated through Invoke, which takes the actor's exclusive turn
-	// This happens at most once per activation of the reader
-	if response.Status == lookupStatusNotLoaded {
-		response, err = s.lookup(ctx, true, request)
-		if err != nil {
-			return "", "", err
-		}
-	}
-
-	return response.Country, response.City, nil
+	return record.Country.Names["en"], record.City.Names["en"], nil
 }
 
-// lookup performs one lookup call against the reader actor, either as a Peek or, when exclusive is set, as an Invoke
-func (s *Service) lookup(ctx context.Context, exclusive bool, request lookupRequest) (lookupResponse, error) {
-	call := s.actors.Peek
-	if exclusive {
-		call = s.actors.Invoke
-	}
+// geoLiteRecord is the subset of a GeoLite2 City record that Pocket ID uses
+type geoLiteRecord struct {
+	City struct {
+		Names map[string]string `maxminddb:"names"`
+	} `maxminddb:"city"`
+	Country struct {
+		Names map[string]string `maxminddb:"names"`
+	} `maxminddb:"country"`
+}
 
-	res, err := call(ctx, ActorType, actor.SingletonActorID, methodLookup, request)
+// load maps the database at dbPath, replacing the one currently mapped
+// A file that is already mapped is left alone, so reloading after an unrelated change is free
+func (s *Service) load(ctx context.Context) error {
+	info, err := os.Stat(s.dbPath)
 	if err != nil {
-		return lookupResponse{}, fmt.Errorf("error looking up the IP address in the %s actor: %w", ActorType, err)
-	}
-	if res == nil {
-		return lookupResponse{}, errors.New(ActorType + " actor response was empty")
+		if os.IsNotExist(err) {
+			// There's no database to map yet: lookups return no location until one shows up
+			s.unload()
+			return nil
+		}
+		return fmt.Errorf("failed to stat the GeoLite2 City database: %w", err)
 	}
 
-	var response lookupResponse
-	err = res.Decode(&response)
+	modTime, size := info.ModTime().UnixNano(), info.Size()
+
+	s.mu.RLock()
+	unchanged := s.db != nil && s.dbModTime == modTime && s.dbSize == size
+	s.mu.RUnlock()
+
+	if unchanged {
+		return nil
+	}
+
+	db, err := maxminddb.Open(s.dbPath)
 	if err != nil {
-		return lookupResponse{}, fmt.Errorf("error decoding the %s actor response: %w", ActorType, err)
+		return fmt.Errorf("failed to open the GeoLite2 City database: %w", err)
 	}
 
-	return response, nil
+	s.mu.Lock()
+	old := s.db
+	s.db = db
+	s.dbModTime = modTime
+	s.dbSize = size
+	s.mu.Unlock()
+
+	// The previous database is unmapped only once no lookup can still be reading it, which the write lock above guarantees
+	closeDatabase(old)
+
+	s.log.InfoContext(ctx, "Loaded the GeoLite2 City database",
+		slog.String("path", s.dbPath),
+		slog.Time("modTime", info.ModTime()),
+		slog.Int64("size", size),
+	)
+
+	return nil
+}
+
+// unload drops the database currently mapped, so lookups stop returning locations from a file that is no longer there
+func (s *Service) unload() {
+	s.mu.Lock()
+	old := s.db
+	s.db = nil
+	s.dbModTime = 0
+	s.dbSize = 0
+	s.mu.Unlock()
+
+	closeDatabase(old)
+}
+
+// closeDatabase unmaps a database
+// The caller must have already made it unreachable to lookups, since unmapping a database that is still being read would crash the process
+func closeDatabase(db *maxminddb.Reader) {
+	if db == nil {
+		return
+	}
+
+	// Unmapping only fails if the mapping is already gone, which is not something the caller can act on
+	_ = db.Close()
 }

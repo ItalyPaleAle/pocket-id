@@ -80,9 +80,9 @@ func initServices(
 		return nil, fmt.Errorf("failed to create email module: %w", err)
 	}
 
-	svc.geoLiteModule, err = geolite.New(geolite.Dependencies{
-		Actors:      actors,
+	svc.geoLiteModule, err = geolite.New(ctx, geolite.Dependencies{
 		HTTPClient:  httpClient,
+		DBPath:      common.EnvConfig.GeoLiteDBPath,
 		DownloadURL: common.EnvConfig.GeoLiteDBUrl,
 		LicenseKey:  common.EnvConfig.MaxMindLicenseKey,
 	})

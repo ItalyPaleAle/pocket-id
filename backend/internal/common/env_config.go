@@ -79,6 +79,7 @@ type EnvConfigSchema struct {
 	TLSKeyFile  string `env:"TLS_KEY" options:"file"`
 
 	MaxMindLicenseKey string `env:"MAXMIND_LICENSE_KEY" options:"file"`
+	GeoLiteDBPath     string `env:"GEOLITE_DB_PATH"`
 	GeoLiteDBUrl      string `env:"GEOLITE_DB_URL"`
 
 	ActorsPort string `env:"ACTORS_PORT"`
@@ -116,6 +117,7 @@ func defaultConfig() EnvConfigSchema {
 		Host:                      "0.0.0.0",
 		ActorsPort:                "1414",
 		ActorsHost:                "0.0.0.0",
+		GeoLiteDBPath:             "data/GeoLite2-City.mmdb",
 		GeoLiteDBUrl:              MaxMindGeoLiteCityUrl,
 	}
 }

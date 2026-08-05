@@ -4,17 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
-	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/italypaleale/francis/actor"
-	"github.com/italypaleale/francis/host/local"
 	"github.com/stretchr/testify/require"
 
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
@@ -36,87 +33,38 @@ func readTestDatabase(t *testing.T) []byte {
 	return data
 }
 
-// newActorHostForTest starts a test actor host with the GeoLite actor registered on it
-// The actor is registered as a regular actor rather than a singleton one, so the host doesn't bootstrap it and the test drives the actor explicitly
-func newActorHostForTest(t *testing.T, opts actorOptions) *local.Host {
-	t.Helper()
-
-	return testutils.NewActorHostForTest(t, func(t *testing.T, h *local.Host) {
-		err := h.RegisterActor(ActorType, NewActor(opts))
-		require.NoError(t, err)
-	})
+// testLogger returns a logger that discards everything, so tests don't spam the output
+func testLogger() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
 }
 
-// newActorServiceForTest is newActorHostForTest for tests that only need the actor service
-func newActorServiceForTest(t *testing.T, opts actorOptions) *actor.Service {
+// newServiceForTest returns a Service backed by a database file inside a temporary directory, along with the path of that file
+// When data is nil no database is written, so the service starts with nothing to look up against
+func newServiceForTest(t *testing.T, data []byte) (*Service, string) {
 	t.Helper()
 
-	return newActorHostForTest(t, opts).Service()
-}
-
-// requireUpdateScheduledForTest asserts that the updater has armed a one-shot alarm due around the given time
-func requireUpdateScheduledForTest(t *testing.T, host *local.Host, dueTime time.Time) {
-	t.Helper()
-
-	props, err := host.GetAlarm(t.Context(), ActorType, updaterActorID, alarmUpdate)
-	require.NoError(t, err)
-	require.Empty(t, props.Interval, "the update alarm must not repeat on a fixed interval")
-	require.WithinDuration(t, dueTime, props.DueTime, time.Minute)
-}
-
-// storeDatabaseForTest writes a database directly into the reader's actor state, as the updater does after a download
-func storeDatabaseForTest(t *testing.T, svc *actor.Service, data []byte, updatedAt time.Time) {
-	t.Helper()
-
-	err := svc.SetState(t.Context(), ActorType, actor.SingletonActorID, databaseState{
-		Data:      data,
-		UpdatedAt: updatedAt,
-	}, nil)
-	require.NoError(t, err)
-}
-
-// peekLookupForTest peeks the reader actor to resolve an IP address
-func peekLookupForTest(t *testing.T, svc *actor.Service, ipAddress string) lookupResponse {
-	t.Helper()
-
-	response, err := lookupForTest(t.Context(), svc, false, ipAddress)
-	require.NoError(t, err)
-
-	return response
-}
-
-// invokeLookupForTest resolves an IP address through Invoke, which also loads the database when the reader has just activated
-func invokeLookupForTest(t *testing.T, svc *actor.Service, ipAddress string) lookupResponse {
-	t.Helper()
-
-	response, err := lookupForTest(t.Context(), svc, true, ipAddress)
-	require.NoError(t, err)
-
-	return response
-}
-
-// lookupForTest performs a lookup without assertions, so it can be called from outside the test's goroutine, such as from the condition of require.Eventually
-func lookupForTest(ctx context.Context, svc *actor.Service, exclusive bool, ipAddress string) (lookupResponse, error) {
-	call := svc.Peek
-	if exclusive {
-		call = svc.Invoke
+	dbPath := filepath.Join(t.TempDir(), "GeoLite2-City.mmdb")
+	if data != nil {
+		writeDatabaseFileForTest(t, dbPath, data)
 	}
 
-	res, err := call(ctx, ActorType, actor.SingletonActorID, methodLookup, lookupRequest{IPAddress: ipAddress})
-	if err != nil {
-		return lookupResponse{}, err
-	}
-	if res == nil {
-		return lookupResponse{}, errors.New("actor response was empty")
-	}
+	svc := newService(testLogger(), dbPath)
+	err := svc.load(t.Context())
+	require.NoError(t, err)
 
-	var response lookupResponse
-	err = res.Decode(&response)
-	if err != nil {
-		return lookupResponse{}, err
-	}
+	return svc, dbPath
+}
 
-	return response, nil
+// writeDatabaseFileForTest puts a database at path the same way the refresher does: written elsewhere, then moved into place
+func writeDatabaseFileForTest(t *testing.T, path string, data []byte) {
+	t.Helper()
+
+	tmpPath := path + ".tmp"
+	err := os.WriteFile(tmpPath, data, 0600)
+	require.NoError(t, err)
+
+	err = os.Rename(tmpPath, path)
+	require.NoError(t, err)
 }
 
 // countingRoundTripper serves a fixed response for testDownloadURL and counts how many requests it has received

@@ -2,14 +2,16 @@ package geolite
 
 import (
 	"archive/tar"
-	"bytes"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -22,64 +24,102 @@ const (
 	maxDatabaseSize = 300 << 20 // 300 MB
 )
 
-// downloadDatabase downloads the GeoLite2 City database and returns the raw MaxMind DB file
+// downloadDatabase downloads the GeoLite2 City database and puts it at targetPath
 // When downloadURL contains a "%s" placeholder, it is replaced with the license key
-func downloadDatabase(ctx context.Context, httpClient *http.Client, downloadURL string, licenseKey string) ([]byte, error) {
+// The database is streamed to a temporary file next to the target and moved into place only once it has been verified, so the download never holds the database in memory and a failure can't leave a corrupted file behind
+func downloadDatabase(ctx context.Context, httpClient *http.Client, downloadURL string, licenseKey string, targetPath string) error {
 	if strings.Contains(downloadURL, "%s") {
 		downloadURL = fmt.Sprintf(downloadURL, licenseKey)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	res, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download database: %w", err)
+		return fmt.Errorf("failed to download database: %w", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download database, received HTTP %d", res.StatusCode)
+		return fmt.Errorf("failed to download database, received HTTP %d", res.StatusCode)
 	}
 
-	data, err := extractDatabase(res.Body)
+	return writeDatabase(res.Body, targetPath)
+}
+
+// writeDatabase extracts the database from a downloaded body and puts it at targetPath
+func writeDatabase(body io.Reader, targetPath string) error {
+	baseDir := filepath.Dir(targetPath)
+	err := os.MkdirAll(baseDir, 0700)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract database: %w", err)
+		return fmt.Errorf("failed to create the database directory: %w", err)
 	}
 
-	// Make sure the database isn't corrupted before it's handed over to the caller, which stores it for the whole cluster
-	db, err := maxminddb.OpenBytes(data)
+	tmpFile, err := os.CreateTemp(baseDir, "geolite.*.mmdb.tmp")
 	if err != nil {
-		return nil, fmt.Errorf("failed to open downloaded database: %w", err)
+		return fmt.Errorf("failed to create temporary database file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+
+	// Remove the temporary file unless it has been moved into place
+	moved := false
+	defer func() {
+		tmpFile.Close()
+		if !moved {
+			os.Remove(tmpName)
+		}
+	}()
+
+	err = extractDatabase(body, tmpFile)
+	if err != nil {
+		return fmt.Errorf("failed to extract database: %w", err)
+	}
+
+	err = tmpFile.Close()
+	if err != nil {
+		return fmt.Errorf("failed to write database file: %w", err)
+	}
+
+	// Make sure the database isn't corrupted before it replaces the one currently in place
+	db, err := maxminddb.Open(tmpName)
+	if err != nil {
+		return fmt.Errorf("failed to open downloaded database: %w", err)
 	}
 	_ = db.Close()
 
-	return data, nil
+	err = os.Rename(tmpName, targetPath)
+	if err != nil {
+		return fmt.Errorf("failed to replace database file: %w", err)
+	}
+	moved = true
+
+	return nil
 }
 
-// extractDatabase returns the raw MaxMind DB file contained in the downloaded body
+// extractDatabase copies the raw MaxMind DB file out of a downloaded body and into dst
 // The body is either the gzipped tarball published by MaxMind, or the database file itself
-func extractDatabase(reader io.Reader) ([]byte, error) {
-	// Read the first two bytes to check for the gzip magic number
-	magic := make([]byte, 2)
-	_, err := io.ReadFull(reader, magic)
+func extractDatabase(body io.Reader, dst io.Writer) error {
+	// A buffered reader lets the gzip magic number be checked without consuming it
+	reader := bufio.NewReader(body)
+
+	magic, err := reader.Peek(2)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read magic number: %w", err)
+		return fmt.Errorf("failed to read magic number: %w", err)
 	}
-	reader = io.MultiReader(bytes.NewReader(magic), reader)
 
 	// If the body doesn't start with the gzip magic number, assume it's a plain database file
 	// Gosec returns false positive for "G602: slice index out of range"
 	//nolint:gosec
 	if magic[0] != 0x1f || magic[1] != 0x8b {
-		return readDatabase(reader)
+		return copyDatabase(dst, reader)
 	}
 
 	gzr, err := gzip.NewReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gzr.Close()
 
@@ -89,7 +129,7 @@ func extractDatabase(reader io.Reader) ([]byte, error) {
 		if errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return nil, fmt.Errorf("failed to read tar archive: %w", err)
+			return fmt.Errorf("failed to read tar archive: %w", err)
 		}
 
 		// The archive contains the database in a versioned folder, alongside other files such as the license
@@ -97,28 +137,28 @@ func extractDatabase(reader io.Reader) ([]byte, error) {
 			continue
 		}
 
-		return readDatabase(tarReader)
+		return copyDatabase(dst, tarReader)
 	}
 
-	return nil, errors.New(databaseFileName + " not found in archive")
+	return errors.New(databaseFileName + " not found in archive")
 }
 
-// readDatabase reads the database in full, refusing anything larger than maxDatabaseSize
-func readDatabase(reader io.Reader) ([]byte, error) {
-	return readDatabaseWithLimit(reader, maxDatabaseSize)
+// copyDatabase streams the database into dst, refusing anything larger than maxDatabaseSize
+func copyDatabase(dst io.Writer, src io.Reader) error {
+	return copyDatabaseWithLimit(dst, src, maxDatabaseSize)
 }
 
-// readDatabaseWithLimit is readDatabase with an explicit limit, which lets tests exercise the limit without reading hundreds of megabytes
-func readDatabaseWithLimit(reader io.Reader, limit int64) ([]byte, error) {
-	// Read one byte more than the limit, so content that is exactly at the limit can be told apart from content that exceeds it
-	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+// copyDatabaseWithLimit is copyDatabase with an explicit limit, which lets tests exercise the limit without streaming hundreds of megabytes
+func copyDatabaseWithLimit(dst io.Writer, src io.Reader, limit int64) error {
+	// Copy one byte more than the limit, so content that is exactly at the limit can be told apart from content that exceeds it
+	written, err := io.Copy(dst, io.LimitReader(src, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read database: %w", err)
+		return fmt.Errorf("failed to read database: %w", err)
 	}
 
-	if int64(len(data)) > limit {
-		return nil, errors.New("database size exceeds maximum allowed limit")
+	if written > limit {
+		return errors.New("database size exceeds maximum allowed limit")
 	}
 
-	return data, nil
+	return nil
 }
